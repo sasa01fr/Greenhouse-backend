@@ -2,7 +2,6 @@ const express = require("express");
 const router = express.Router();
 const { queryApi } = require("../utils/influx");
 
-// Mapare _field -> titlu/unitate/emoji
 const fieldMapping = {
   temperatura_aer: { name: "Temperatura Aer", unit: "°C", emoji: "🌡️" },
   temperatura_sol: { name: "Temperatura Sol", unit: "°C", emoji: "🌱" },
@@ -12,30 +11,36 @@ const fieldMapping = {
   presiune: { name: "Presiune", unit: "hPa", emoji: "⚖️" }
 };
 
-router.get("/", async (req, res) => {
+router.get("/history", async (req, res) => {
   try {
-    const fluxQuery = `from(bucket:"${process.env.INFLUX_BUCKET}") 
-                       |> range(start: -1h)
-                       |> filter(fn: (r) => r._measurement == "senzor")
-                       |> last()`;
+    // Fetch only numeric fields
+    const numericFields = Object.keys(fieldMapping)
+      .filter(f => f !== "someBooleanField"); // replace with your boolean fields
 
-    const data = [];
-    await queryApi.collectRows(fluxQuery, row => data.push(row));
+    const data = {};
 
-    const grouped = {};
-    data.forEach(d => {
-      if (fieldMapping[d._field]) {
-        grouped[d._field] = {
-          id: d._field,
-          name: fieldMapping[d._field].name,
-          value: d._value,
-          unit: fieldMapping[d._field].unit,
-          emoji: fieldMapping[d._field].emoji
-        };
-      }
-    });
+    for (const field of numericFields) {
+      const fluxQuery = `
+        from(bucket:"${process.env.INFLUX_BUCKET}")
+        |> range(start: 0)
+        |> filter(fn: (r) => r._measurement == "senzor" and r._field == "${field}")
+        |> aggregateWindow(every: 1h, fn: mean)
+        |> sort(columns: ["_time"])
+      `;
 
-    res.json(Object.values(grouped));
+      data[field] = [];
+      await queryApi.collectRows(fluxQuery, row => {
+        data[field].push({
+          time: row._time,
+          value: row._value,
+          name: fieldMapping[field].name,
+          unit: fieldMapping[field].unit,
+          emoji: fieldMapping[field].emoji
+        });
+      });
+    }
+
+    res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
