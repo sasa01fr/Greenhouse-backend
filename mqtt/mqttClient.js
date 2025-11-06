@@ -1,56 +1,90 @@
 const mqtt = require("mqtt");
 const { writeApi, Point } = require("../utils/influx");
 
-// Conectare MQTT
-const mqttClient = mqtt.connect(process.env.MQTT_URL || "mqtt://localhost:1883");
+
+const mqttClient = mqtt.connect(process.env.MQTT_URL || "mqtt://192.168.1.5:1883");
 
 mqttClient.on("connect", () => {
   console.log("✅ MQTT connected");
+  
+  
+  mqttClient.subscribe("greenhouse/+/sensor", err => {
+    if (err) console.error("❌ MQTT subscribe error (sensor):", err);
+    else console.log("👂 Subscribed to: greenhouse/+/sensor");
+  });
+  
+  mqttClient.subscribe("greenhouse/+/sensors", err => {
+    if (err) console.error("❌ MQTT subscribe error (sensors):", err);
+    else console.log("👂 Subscribed to: greenhouse/+/sensors");
+  });
+  
+  
   mqttClient.subscribe("greenhouse/sensor", err => {
-    if (err) console.error("❌ MQTT subscribe error:", err);
+    if (err) console.error("❌ MQTT subscribe error (legacy):", err);
+    else console.log("👂 Subscribed to: greenhouse/sensor");
   });
 });
 
-// Buffer pentru puncte InfluxDB
+
 const pointsBuffer = [];
 
-// Mesaje MQTT
+
 mqttClient.on("message", (topic, message) => {
   try {
     const data = JSON.parse(message.toString());
+    console.log(`📨 Received MQTT message on topic: ${topic}`);
 
-    const point = new Point("senzor");
+   
+    let deviceId = "default_device";
+    const topicParts = topic.split('/');
+    if (topicParts.length >= 2 && topicParts[0] === 'greenhouse') {
+      deviceId = topicParts[1] || "default_device";
+    }
 
-    // Date senzori
-    if (data.temperatura != null) point.floatField("temperatura", data.temperatura);
-    if (data.umiditate != null) point.floatField("umiditate", data.umiditate);
-    if (data.temperatura_sol != null) point.floatField("temperatura_sol", data.temperatura_sol);
-    if (data.umiditate_sol != null) point.floatField("umiditate_sol", data.umiditate_sol);
-    if (data.luminozitate != null) point.floatField("luminozitate", data.luminozitate);
-    if (data.presiune != null) point.floatField("presiune", data.presiune);
+    const point = new Point("senzor")
+      .tag("device_id", deviceId);
 
-    // Comenzi actuatoare
-    if (data.pompa != null) point.booleanField("pompa", data.pompa);
-    if (data.ventilator != null) point.booleanField("ventilator", data.ventilator);
-    if (data.lumini != null) point.booleanField("lumini", data.lumini);
+    
+    let sensorData = data;
+    if (data.sensors && typeof data.sensors === 'object') {
+      sensorData = data.sensors;
+    }
 
-    // Adăugăm punctul în buffer
+   
+    if (sensorData.temperatura != null) point.floatField("temperatura", sensorData.temperatura);
+    if (sensorData.umiditate != null) point.floatField("umiditate", sensorData.umiditate);
+    if (sensorData.temperatura_sol != null) point.floatField("temperatura_sol", sensorData.temperatura_sol);
+    if (sensorData.umiditate_sol != null) point.floatField("umiditate_sol", sensorData.umiditate_sol);
+    if (sensorData.luminozitate != null) point.floatField("luminozitate", sensorData.luminozitate);
+    if (sensorData.presiune != null) point.floatField("presiune", sensorData.presiune);
+
+    
+    if (sensorData.pompa != null) point.booleanField("pompa", sensorData.pompa);
+    if (sensorData.ventilator != null) point.booleanField("ventilator", sensorData.ventilator);
+    if (sensorData.lumini != null) point.booleanField("lumini", sensorData.lumini);
+
+    
+    if (data.timestamp) {
+      point.timestamp(new Date(data.timestamp));
+    }
+
+    
     pointsBuffer.push(point);
-
-    console.log("📥 Date MQTT primite și adăugate în buffer:", data);
+    console.log(`💾 Processed data for device: ${deviceId}`);
 
   } catch (err) {
     console.error("❌ MQTT message error:", err.message);
   }
 });
 
-// Flush periodic către InfluxDB la fiecare 5 secunde
+
 setInterval(() => {
   if (pointsBuffer.length > 0) {
-    writeApi.writePoints(pointsBuffer.splice(0, pointsBuffer.length));
+    const pointsToWrite = pointsBuffer.splice(0, pointsBuffer.length);
+    writeApi.writePoints(pointsToWrite);
     writeApi.flush()
-      .then(() => console.log("✅ Date scrise în InfluxDB"))
-      .catch(err => console.error("❌ Eroare scriere InfluxDB:", err.message));
+      .then(() => console.log(`✅ ${pointsToWrite.length} points written to InfluxDB`))
+      .catch(err => console.error("❌ InfluxDB write error:", err.message));
   }
 }, 5000);
 
